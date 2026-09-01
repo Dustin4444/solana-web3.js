@@ -1,6 +1,8 @@
 import bs58 from 'bs58';
 import {Buffer} from 'buffer';
 import {expect} from 'chai';
+import * as fs from 'fs';
+import * as path from 'path';
 
 import {Connection} from '../src/connection';
 import {Keypair} from '../src/keypair';
@@ -12,7 +14,7 @@ import {
   VersionedTransaction,
 } from '../src/transaction';
 import {StakeProgram, SystemProgram} from '../src/programs';
-import {Message} from '../src/message';
+import {Message, MessageV1} from '../src/message';
 import invariant from '../src/utils/assert';
 import {toBuffer} from '../src/utils/to-buffer';
 import {helpers} from './mocks/rpc-http';
@@ -1150,6 +1152,105 @@ describe('VersionedTransaction', () => {
 
     const versionedTx = VersionedTransaction.deserialize(serializedVersionedTx);
     expect(versionedTx.message.version).to.eq(0);
+  });
+
+  it('deserializes version 1 transactions', () => {
+    const serializedV1Tx = Buffer.from(
+      'gQEAAQ8AAADomUshQUu++wfzaydJlLMCXvZqJHDIekamPKt/+nouRQED6kpsY+Kc' +
+        'Ugq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iz9FyQ4WqDHW2T7eM1gL6HZkf3r92sT' +
+        'xY7XAurINen2GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAiBMAAAAA' +
+        'AAAwdQAAQA0DAAICDAAAAQIAAABAQg8AAAAAAE+PfvytpVg+OwZUsJfh3nrH0Wuu' +
+        'O9+NStlru2gn0ecx/F/h7BAGXmEWVFVXsjzEsQxk0VLc9Pi0kJaLLOJp4wE=',
+      'base64',
+    );
+
+    const versionedTx = VersionedTransaction.deserialize(serializedV1Tx);
+    const message = versionedTx.message;
+    invariant(message instanceof MessageV1);
+
+    expect(message.version).to.eq(1);
+    expect(message.header).to.eql({
+      numRequiredSignatures: 1,
+      numReadonlySignedAccounts: 0,
+      numReadonlyUnsignedAccounts: 1,
+    });
+    expect(message.staticAccountKeys.map(key => key.toBase58())).to.eql([
+      'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB',
+      'J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf',
+      '11111111111111111111111111111111',
+    ]);
+    expect(message.recentBlockhash).to.eq(
+      'GeyAFFRY3WGpmam2hbgrKw4rbU2RKzfVLm5QLSeZwTZE',
+    );
+    expect(message.transactionConfig).to.eql({
+      computeUnitLimit: 30000,
+      heapSize: null,
+      loadedAccountsDataSizeLimit: 200000,
+      priorityFee: 5000,
+    });
+    expect(message.compiledInstructions).to.eql([
+      {
+        programIdIndex: 2,
+        accountKeyIndexes: [0, 1],
+        data: new Uint8Array([2, 0, 0, 0, 64, 66, 15, 0, 0, 0, 0, 0]),
+      },
+    ]);
+
+    expect(versionedTx.signatures).to.have.length(1);
+    expect(Buffer.from(versionedTx.signatures[0]).toString('base64')).to.eq(
+      'T49+/K2lWD47BlSwl+HeesfRa647341K2Wu7aCfR5zH8X+HsEAZeYRZUVVeyPMSxDGTRUtz0+LSQloss4mnjAQ==',
+    );
+
+    const serializedV1TxWithTrailingGarbage = Buffer.concat([
+      serializedV1Tx,
+      Buffer.from([0xff]),
+    ]);
+    expect(() =>
+      VersionedTransaction.deserialize(serializedV1TxWithTrailingGarbage),
+    ).to.throw(
+      'Expected no bytes to remain after deserializing a version 1 message',
+    );
+  });
+
+  it('deserializes version 1 transactions larger than the legacy packet size', () => {
+    const serializedV1Tx = Buffer.from(
+      fs.readFileSync(
+        path.join(__dirname, 'fixtures', 'v1-transaction-large.b64'),
+        'utf8',
+      ),
+      'base64',
+    );
+    expect(serializedV1Tx).to.have.length(3976);
+
+    const versionedTx = VersionedTransaction.deserialize(serializedV1Tx);
+    const message = versionedTx.message;
+    invariant(message instanceof MessageV1);
+
+    expect(message.version).to.eq(1);
+    expect(message.transactionConfig).to.eql({
+      computeUnitLimit: 1400000,
+      heapSize: 65536,
+      loadedAccountsDataSizeLimit: 65536,
+      priorityFee: 123456789,
+    });
+    expect(message.staticAccountKeys.map(key => key.toBase58())).to.eql([
+      'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB',
+      'J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf',
+      '11111111111111111111111111111111',
+      'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
+    ]);
+
+    expect(message.compiledInstructions).to.have.length(2);
+    const largeInstruction = message.compiledInstructions[1];
+    expect(largeInstruction.programIdIndex).to.eq(3);
+    expect(largeInstruction.data).to.have.length(3700);
+    const expectedData = new Uint8Array(3700);
+    for (let i = 0; i < expectedData.length; i++) {
+      expectedData[i] = i % 251;
+    }
+    expect(largeInstruction.data).to.eql(expectedData);
+
+    expect(versionedTx.signatures).to.have.length(1);
   });
 
   describe('addSignature', () => {

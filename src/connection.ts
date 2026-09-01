@@ -43,7 +43,14 @@ import {
   TransactionVersion,
   VersionedTransaction,
 } from './transaction';
-import {Message, MessageHeader, MessageV0, VersionedMessage} from './message';
+import {
+  Message,
+  MessageHeader,
+  MessageV0,
+  MessageV1,
+  TransactionConfig,
+  VersionedMessage,
+} from './message';
 import {AddressLookupTableAccount} from './programs/address-lookup-table/state';
 import assert from './utils/assert';
 import {sleep} from './utils/sleep';
@@ -486,6 +493,26 @@ function versionedMessageFromResponse(
         data: bs58.decode(ix.data),
       })),
       addressTableLookups: response.addressTableLookups!,
+    });
+  } else if (version === 1) {
+    const transactionConfig = response.transactionConfig;
+    if (transactionConfig == null) {
+      throw new Error(
+        'Expected a version 1 transaction message response to have a `transactionConfig`',
+      );
+    }
+    return new MessageV1({
+      header: response.header,
+      staticAccountKeys: response.accountKeys.map(
+        accountKey => new PublicKey(accountKey),
+      ),
+      recentBlockhash: response.recentBlockhash,
+      compiledInstructions: response.instructions.map(ix => ({
+        programIdIndex: ix.programIdIndex,
+        accountKeyIndexes: ix.accounts,
+        data: bs58.decode(ix.data),
+      })),
+      transactionConfig,
     });
   } else {
     return new Message(response);
@@ -1179,6 +1206,7 @@ type MessageResponse = {
   instructions: CompiledInstruction[];
   recentBlockhash: string;
   addressTableLookups?: ParsedAddressTableLookup[];
+  transactionConfig?: TransactionConfig | null;
 };
 
 /**
@@ -1259,6 +1287,8 @@ export type ParsedMessage = {
   recentBlockhash: string;
   /** Address table lookups used to load additional accounts */
   addressTableLookups?: ParsedAddressTableLookup[] | null;
+  /** The compute budget configuration of a v1 transaction; absent for legacy and v0 transactions */
+  transactionConfig?: TransactionConfig | null;
 };
 
 /**
@@ -2243,6 +2273,13 @@ const AddressTableLookupStruct = pick({
   readonlyIndexes: array(number()),
 });
 
+const TransactionConfigResult = pick({
+  computeUnitLimit: nullable(number()),
+  heapSize: nullable(number()),
+  loadedAccountsDataSizeLimit: nullable(number()),
+  priorityFee: nullable(number()),
+});
+
 const ConfirmedTransactionResult = pick({
   signatures: array(string()),
   message: pick({
@@ -2261,6 +2298,7 @@ const ConfirmedTransactionResult = pick({
     ),
     recentBlockhash: string(),
     addressTableLookups: optional(array(AddressTableLookupStruct)),
+    transactionConfig: optional(nullable(TransactionConfigResult)),
   }),
 });
 
@@ -2328,6 +2366,7 @@ const ParsedConfirmedTransactionResult = pick({
     instructions: array(ParsedOrRawInstruction),
     recentBlockhash: string(),
     addressTableLookups: optional(nullable(array(AddressTableLookupStruct))),
+    transactionConfig: optional(nullable(TransactionConfigResult)),
   }),
 });
 
@@ -2402,7 +2441,11 @@ const ParsedConfirmedTransactionMetaResult = pick({
   costUnits: optional(number()),
 });
 
-const TransactionVersionStruct = union([literal(0), literal('legacy')]);
+const TransactionVersionStruct = union([
+  literal(0),
+  literal(1),
+  literal('legacy'),
+]);
 
 /** @internal */
 const RewardsResult = pick({
